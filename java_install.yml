@@ -1,0 +1,7 @@
+---
+- name: "Install and Configure Java"
+  hosts: localhost
+  become: yes
+
+  roles:
+    - ing-ansible-role-platform-java

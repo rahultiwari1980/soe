@@ -1,0 +1,151 @@
+---
+- name: Add the relevant host to the inventory group
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    packer_servers:
+      SY6: 10.54.144.106
+      SY7: 10.55.144.103
+    packer_server: "{{ packer_servers[datacenter] }}"
+
+  tasks:
+
+    - name: Add relevant packer server to inventory based on datacenter name
+      add_host:
+        name: "{{ packer_server }}"
+        groups: packer
+
+- hosts: packer
+  become: yes
+  remote_user: autotasker
+  gather_facts: false
+  
+  vars_files:
+    - secrets.yml
+    - vars_files/packer_vars.yml
+
+  tasks:
+    - name: get new version name
+      command: "date +%Y%m%d"
+      register: myversion
+
+    - name: set the next version
+      set_fact:
+        new_template_version: "{{myversion.stdout}}"
+    
+    - debug:
+        msg: "{{ new_template_version }}"
+
+    - name: removing underscore from dir name ##hostname can not have underscore    
+      set_fact:
+         rhelvers: "{{ rhel_version| regex_replace('_','-') }}" 
+
+
+    - name: set new environment diectory for this execution of packer
+      set_fact: 
+        dir_name:  "{{ rhelvers }}-{{ environment_type }}-{{ datacenter }}-{{ site }}-{{ new_template_version }}"
+
+    # - debug: 
+    #     msg: "{{ dir_name }}"
+
+    - name: remove existing packer directory 
+      file: 
+       path: /opt/packer/{{dir_name}}
+       state: absent
+
+    - name: Create the required directory
+      file:
+        path: /opt/packer/{{dir_name}}
+        state: directory
+        owner: root
+        group: root
+        recurse: yes
+        mode: 0755
+
+    - name: Copy packer executables
+      copy:
+        src: "{{ item }}"
+        dest: "/opt/packer/{{dir_name}}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0755'
+        force: yes
+      with_items:
+        - packer
+        - packer-builder-vsphere-iso
+        - ks_RHEL6.cfg
+        - ks_RHEL6_Jboss.cfg
+        - ks_RHEL7.cfg
+        - ks_RHEL7_OCP_Infra.cfg
+        - ks_RHEL7_OCP_Node.cfg
+        - ks_RHEL7_OCP_Master.cfg
+        - ks_RHEL7_Jboss.cfg
+        - ks_RHEL7_Java.cfg
+        - ks_RHEL7_Nginx.cfg
+        - ks_RHEL7_Tomcat.cfg
+        - RHEL6_build.json
+        - RHEL6_Jboss_build.json
+        - RHEL7_build.json
+        - RHEL7_OCP_Infra_build.json
+        - RHEL7_OCP_Node_build.json
+        - RHEL7_OCP_Master_build.json
+        - RHEL7_Jboss_build.json
+        - RHEL7_Java_build.json
+        - RHEL7_Nginx_build.json
+        - RHEL7_Tomcat_build.json
+        - RHEL8_build.json
+        - Files/
+        - roles/
+        - scripts/
+        - templates/
+        - server_hardening.yml
+        - server_hardening_ocp.yml
+        - server_hardening_rhel8.yml
+        - jboss_install.yml
+        - java_install.yml
+        - nginx_install.yml
+        - tomcat_install.yml
+        - inventory
+    
+    - name: setting correct NTP servers configuration with priority according to DC location
+      command: "mv /opt/packer/{{dir_name}}/roles/ansible_role_linux_server_hardening/templates/chrony_{{datacenter|lower}}.conf.j2 /opt/packer/{{dir_name}}/roles/ansible_role_linux_server_hardening/templates/chrony.conf.j2"
+      when: "'RHEL7' in rhel_version or 'RHEL6' in rhel_version"
+
+
+    - name: move the satellite templates to scripts directory
+      template: 
+        src: templates/{{ item }}.j2
+        dest: /opt/packer/{{dir_name}}/scripts/{{ item }}
+        owner: root
+        group: root
+        mode: '0755'
+      with_items: 
+        - sat_registration.sh
+        - sat_registration_RHEL6.sh
+        - sat_registration_RHEL8.sh
+#      when: "'RHEL7' in rhel_version or 'RHEL6' in rhel_version"
+
+
+    - set_fact: eth_device={{ 'ens192' if "RHEL7" in rhel_version else 'eth0' }}
+      when: "'RHEL7' in rhel_version or 'RHEL6' in rhel_version"
+
+    - name: Ensure required network settings exist in kickstart file
+      lineinfile:
+        path: /opt/packer/{{dir_name}}/ks_{{ rhel_version }}.cfg
+        regexp: '^network --onboot yes'
+        line: network --onboot yes --device {{ eth_device }} --noipv6 --bootproto=static --ip={{ IP }} --netmask={{ NM }} --gateway={{ GW }} --nameserver {{ NS }}
+        owner: root
+        group: root
+        mode: '0755'
+      when: "'RHEL7' in rhel_version or 'RHEL6' in rhel_version"
+
+
+
+    - name: Build the RHEL packer image based on the inputs provided by user
+      shell: "cd /opt/packer/{{dir_name}}; ./packer build -on-error=abort -force -var 'environment_type={{ environment_type }}' -var 'vm_host={{ vmware_host }}' -var 'vm_user={{ vmware_user }}' -var 'vm_pass={{ vmware_pass }}' -var 'root_ssh_password={{ root_ssh_password }}' -var 'datacenter={{ datacenter }}' -var 'cluster={{ cluster }}' -var 'datastore={{ datastore }}' -var 'network={{ network }}' -var 'site={{ site }}' -var 'IP={{ IP }}' -var 'GW={{ GW }}' -var 'NM={{ NM }}' -var 'NS={{ NS }}' -var 'java_version={{ java_version|default(omit) }}' -var 'ngx_version={{ ngx_version|default(omit) }}' -var 'template_version={{ new_template_version }}' -var 'dir_name={{dir_name}}' {{ rhel_version }}_build.json" 
+
+    - name: cleanup  packer directory 
+      file: 
+       path: /opt/packer/{{dir_name}}
+       state: absent

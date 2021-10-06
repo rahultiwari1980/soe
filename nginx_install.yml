@@ -1,0 +1,7 @@
+---
+- name: "Install and Configure Nginx"
+  hosts: localhost
+  become: yes
+
+  roles:
+    - ing-ansible-role-platform-nginx

@@ -1,0 +1,7 @@
+---
+- name: "Install and Configure Jboss"
+  hosts: localhost
+  become: yes
+
+  roles:
+    - ing-ansible-role-platform-jboss
